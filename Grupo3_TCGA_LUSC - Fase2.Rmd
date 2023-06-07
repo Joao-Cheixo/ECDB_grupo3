@@ -1,0 +1,578 @@
+---
+title: "GDC Lung Squamous Cell Carcinoma - dataset (TCGA-LUSC)"
+author: João José Lopes Cheixo (PG49837), Márcia Filipa Gonçalves Oliveira (PG49841), Mariana Rochinha Braguês (PG49843)
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Introdução
+
+O presente trabalho realiza-se no âmbito da unidade curricular Extração de Conhecimento de Dados Biológicos, do Mestrado em Bioinformática. Tem como principal objetivo a análise de um conjunto de dados de expressão genética usando o programa R e os packages do Bioconductor. Com esse intuito, foi recolhido um conjunto de dados do repositório Genomic Data Commons (GDC) Data Portal, <https://portal.gdc.cancer.gov/projects,> associado ao dataset TCGA-LUSC, <https://portal.gdc.cancer.gov/projects/TCGA-LUSC.>
+
+Os dados de expressão genética selecionados referem-se ao Carcinoma Pulmonar de Células Escamosas (LUSC) e com estes dados propomo-nos a desenvolver scripts em R/Bioconductor para importar os dados, efetuar o seu pré-processamento e proceder à sua análise. Os dados extraídos do dataset TCGA-LUSC correspondem a 501 casos de RNA-Seq.
+
+O LUSC é considerado uma das principais causas de mortalidade associada ao cancro em todo o mundo, tendo, até ao momento, reduzidas opções terapêuticas [1]. É frequentemente diagnosticado em estágio avançado e com mau prognóstico [1, 2]. O LUSC, que corresponde a 30% dos casos de cancro do pulmão de não pequenas células, é mais comum em homens de meia-idade e idosos e tem uma alta taxa de metástase e recorrência [2]. Está fortemente relacionado com historial tabágico. Uma compreensão aprofundada dos mecanismos moleculares envolvidos na ocorrência e desenvolvimento deste cancro pode fornecer uma estratégia mais eficaz para a deteção precoce e posterior tratamento clínico [3].
+
+## Importação de packages e dataset
+
+### Importação de packages/libraries
+
+Carregamento dos packages e libraries do R necessários para a execução do trabalho:
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+```
+
+```{r}
+if (!requireNamespace("TCGAbiolinks", quietly = TRUE))
+  BiocManager::install("TCGAbiolinks")
+```
+
+```{r}
+BiocManager::install("MultiAssayExperiment")
+```
+
+```{r}
+library(TCGAbiolinks)
+library(MultiAssayExperiment)
+library(DESeq2)
+library(genefilter)
+library(e1071)
+library(class)
+```
+
+### Dados dos datasets
+
+Carregamento dos dados necessários para a execução do trabalho:
+
+```{r}
+projects <- getGDCprojects()
+projects$id
+```
+
+Extração dos dados do projeto TCGA-LUSC:
+
+```{r}
+proj <- "TCGA-LUSC"
+
+query <- GDCquery(
+  project = proj,
+  data.category = "Transcriptome Profiling", 
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
+)
+GDCdownload(query)
+data_rna_lusc  <- GDCprepare(query)     #guardar ficheiros na pasta
+```
+
+Visualização dos dados:
+
+```{r}
+class(data_rna_lusc) #verificar a classe dos dados
+dim(data_rna_lusc)  #verificar dimensões dos dados
+```
+
+```{r}
+data_rna_lusc$gender
+data_rna_lusc$paper_N.stage
+data_rna_lusc$paper_Expression.Subtype
+```
+
+Metadados:
+
+```{r}
+meta_lusc = colData(data_rna_lusc)
+meta_lusc$patient
+```
+
+Seleção dos dados a utilizar:
+
+```{r}
+data_lusc = assay(data_rna_lusc, 'unstranded')
+head(data_lusc)
+```
+
+## Pré-processamento dos dados
+
+```{r}
+colnames(data_lusc) #nome das colunas dos nossos dados
+```
+
+```{r}
+row.names(data_lusc) #nome das linhas dos nossos dados
+```
+
+```{r}
+class(data_lusc)   #classe 
+dim(data_lusc)    #dimensões
+```
+
+Tratamento/remoção de valores omissos:
+
+```{r}
+sum(unlist(lapply(lapply(data_lusc, is.na), sum))) #não tem nenhum NA
+```
+
+Os nossos dados não apresentam valores omissos (NAs), pelo que, não é necessário proceder à sua remoção.
+
+Standardização dos dados:
+
+```{r}
+data_treat <- scale(data_lusc)
+data_treat
+```
+
+```{r}
+mean <- apply(data_lusc, 1, mean)
+mean
+sd <- apply(data_lusc, 1, sd)
+sd
+```
+
+Filtração de dados:
+
+Filtração de genes após transformação logarítmica:
+
+```{r}
+log_data <- log(data_treat)              #transformação logarítmica
+log_data_clean <- na.exclude(log_data)   #remoção de NAs
+dim(log_data_clean)                      #dimensão dos dados
+```
+
+```{r}
+hist(log_data_clean, breaks = 10, col = "steelblue4", ylim = c(0, 5000), xlab = "Transformação logarítmica", ylab = "Frequência", main = "Dados filtrados após transformação logarítmica")
+```
+
+Filtração de genes cujo rácio do máximo valor sobre o mínimo valor de expressão seja superior a 2:
+
+```{r}
+maximos = apply(data_treat, 1, max)
+minimos = apply(data_treat, 1, min)
+valor_exp = maximos/minimos > 2
+filtered_data_lusc <- data_treat[valor_exp, ]
+dim(filtered_data_lusc)
+```
+
+Histograma de rácios:
+
+```{r}
+hist(maximos/minimos, breaks = 10, col = "steelblue4", ylim = c(0, 5000), xlab = "Rácio máximo/mínimo", ylab = "Frequência", main = "Dados filtrados com o rácio do valor máximo 
+sobre o mínimo")
+abline(v = 2, col = "tomato", lty = 2)
+```
+
+Definição e verificação dos dados finais:
+
+```{r}
+final_data_lusc = log_data_clean #array a usar daqui para a frente
+class(final_data_lusc)
+```
+
+```{r}
+dim(final_data_lusc)
+sum(which(is.na(final_data_lusc)))
+final_data_lusc[1:5,1:4]
+```
+
+## Sumarização dos dados: Estatística descritiva
+
+```{r}
+class(final_data_lusc)   #classe 
+```
+
+```{r}
+nrow(final_data_lusc)   #número de linhas (genes)
+```
+
+```{r}
+row.names(final_data_lusc)    #nome de linhas (genes)
+```
+
+```{r}
+ncol(final_data_lusc)     #número de colunas (amostras)
+```
+
+```{r}
+colnames(final_data_lusc)    #nome de colunas (amostras)
+```
+
+### Gráficos
+
+Histograma para verificar a normalidade dos dados:
+
+```{r}
+hist(final_data_lusc, ylim = c(0, 0.5), xlim = c(-5, 5), breaks = 10, col = "steelblue4", prob = T, main = "Histograma de dados finais")
+lines(density(final_data_lusc), col = "tomato", lwd = 2)
+```
+
+Com base na análise gráfica, como o histograma apresenta uma curva em forma de sino, sugere que os dados finais seguem uma distribuição normal.
+
+Heatmap com todos os dados finais:
+
+```{r}
+heat_1 = order(final_data_lusc)
+heatmap(final_data_lusc, Colv = NA)
+```
+
+## Análise estatística univariada, análise de expressão diferencial e de enriquecimento
+
+### Análise estatística univariada
+
+Descrição da distribuição dos dados, através do cálculo da média, mediana, desvio padrão e distância interqualtil:
+
+```{r}
+mean(final_data_lusc)   #média
+median(final_data_lusc) #mediana
+sd(final_data_lusc)     #desvio-padrão
+IQR(final_data_lusc)    #distância interquartil
+summary(final_data_lusc)
+```
+
+Teste t-student é um teste estatístico utilizado para avaliar se existe uma diferença significativa entre a média de amostras independentes.
+
+```{r}
+ttests = rowttests(final_data_lusc)
+names(ttests)
+```
+
+```{r}
+ttests$p.value    #ver os p-values
+```
+
+```{r}
+rank = order(ttests$p.value) #ordenar os 20 genes com menor p-value
+pvalue_20 = rank[1:20]
+ttests$p.value[pvalue_20]
+```
+
+```{r}
+first20 <- final_data_lusc[pvalue_20, ]
+first20
+```
+
+#### Gráficos
+
+Heatmap com os 20 genes com o menor p-value:
+
+```{r}
+heat_2 = order(first20)
+heatmap(first20, Colv = NA)
+```
+
+### Análise de expressão diferencial e de enriquecimento
+
+```{r}
+colnames(meta_lusc) #nome das colunas dos metadados
+```
+
+Obtenção de dados de uma feature:
+
+```{r}
+data_pm <- data_rna_lusc[,!is.na(data_rna_lusc$prior_malignancy)] #matriz com dados prior_malignancy, removendo os valores NA
+```
+
+```{r}
+ddsSE_pm <- DESeqDataSet(data_pm, design = ~ prior_malignancy)
+```
+
+Em seguida, fazemos a filtração da matriz de contagens que possuem no mínimo 10 leituras para a feature prior_malignancy, com o intuito de remover genes com baixa contagem.
+
+```{r}
+keep <- rowSums(counts(ddsSE_pm)) >= 10    
+ddsSE_pm <- ddsSE_pm[keep,]
+ddsSE_pm <- DESeq(ddsSE_pm)
+```
+
+```{r}
+resultsNames(ddsSE_pm)
+```
+
+Extração e visualização dos resultados da análise de expressão diferencial realizada para a feature prior_malignancy. O critério de significância a ter em conta neste estudo é p-value \< 0.1.
+
+```{r}
+res_prior_malignancy <- results(ddsSE_pm, name = "prior_malignancy_yes_vs_no")
+dea <- as.data.frame(res_prior_malignancy)
+resOrdered_pm = res_prior_malignancy[order(res_prior_malignancy$padj),]
+summary(res_prior_malignancy)
+sum(res_prior_malignancy$padj < 0.1, na.rm=TRUE)
+```
+
+Relativamente à análise dos resultados:
+
+-   18080 genes, ou seja, 33% corresponde à percentagem de genes que foi removida da análise;
+
+-   645 genes são diferencialmente expressos;
+
+-   28%, ou seja, 153 dos genes analisados apresentaram um LFC\>0, significando que são sobre-expressos relativamente a prior_malignancy;
+
+-   0.9%, ou seja, 492 dos genes analisados apresentaram um LFC\<0, significando que são sub-expressos relativamente a prior_malignancy;
+
+-   Não foram identificados outliers;
+
+-   Log Fold Change \< 0 logo valores "no" maiores do que "yes".
+
+#### Análise gráfica da feature prior_malignancy (MA Plot)
+
+```{r}
+DESeq2::plotMA(res_prior_malignancy, main="Análise gráfica da feature prior_malignancy ", ylim=c(-3,3))
+```
+
+Cada ponto azul representa um gene diferencialmente expresso, enquanto que os pontos cinza correspondem aos outros genes. Como Log Fold Change \< 0, os valores "no" são maiores do que os valores "yes".
+
+#### Análise gráfica de um gene da feature prior_malignancy
+
+```{r}
+resOrdered_pm[1,]
+```
+
+```{r}
+plotCounts(ddsSE_pm, gene=which.min(res_prior_malignancy$padj), intgroup="prior_malignancy", pch = 20, col = "red")
+```
+
+Visualização do gene mais significativo, em termos de expressão diferencial entre os restantes. Este gene corresponde ao ENSG00000234722.5, uma vez que, é aquele que apresenta um menor p-value.
+
+#### Transformação de dados e respetivo heatmap
+
+Realização de VST: Variance Stabilizing Transformation, que mantém a variância independente da média, e visualização do heatmap de apenas 20 genes com maior variação (menor p-value).
+
+```{r}
+vsd_pm <- varianceStabilizingTransformation(ddsSE_pm, blind = FALSE)
+head(assay(vsd_pm), 3)
+head(counts(ddsSE_pm), 3)
+```
+
+```{r}
+select <- rownames(head(resOrdered_pm,20))
+vsd.counts_pm <- assay(vsd_pm)[select,]
+df <- as.data.frame(colData(ddsSE_pm)[,c("prior_malignancy")])
+```
+
+```{r}
+colors = rev(colorRampPalette(RColorBrewer::brewer.pal(10,"RdYlBu"))(300))
+heatmap(vsd.counts_pm, col = colors, main="Expressão Genética")
+```
+
+## Redução de dimensionalidade
+
+Para obter os principais componentes e reduzir a dimensionalidade do conjunto de dados, realizou-se uma análise de Componentes Principais (PCA). Esta técnica é sensível à escala dos dados, por isso recomenda-se realizar uma normalização prévia dos mesmos. Assim, ao aplicar o PCA, utilizou-se a função scale() para padronizar os dados.
+
+```{r}
+final_data_pca = princomp(scale(final_data_lusc[,1:10]))
+```
+
+Após a execução do PCA, pode-se explorar os principais componentes obtidos por meio da função summary(), que fornece informações detalhadas sobre cada componente. Além disso, pode-se visualizar a variância explicada por cada componente, o que ajuda a entender a sua importância na representação dos dados.
+
+```{r}
+proportion_variance <- final_data_pca$sdev^2 / sum(final_data_pca$sdev^2)
+proportion_variance
+```
+
+```{r}
+summary(final_data_pca)
+```
+
+```{r}
+plot(final_data_pca, las = 2)
+```
+
+Obteve-se 10 componentes principais, denominados por Comp.1 a Comp. 10. Uma das informações que cada um destes componentes permite visualizar é "Standard deviation" que corresponde ao desvio padrão que é frequentemente usado para descrever a dispersão dos dados ao longo de cada componente principal. Assim, pode-se verificar que o Comp. 1 apresenta um valor de desvio-padrão 2.83. Neste contexto, pode-se verificar também que o Comp 1 é a componente que mais explica a variação total, o que significa que a grande maioria da informação no conjunto de dados pode ser encapsulada por apenas um componente principal.
+
+Mais informação de cada componente:
+
+```{r}
+str(final_data_pca)
+```
+
+Para visualizar a análise PCA, fez-se um biplot, que inclui a posição de cada amostra em relação ao PC1e ao PC2. Assim, o biplot permite visualizar como as amostras se relacionam umas com as outras no PCA. O nosso dataset apresenta muitos genes, originando sobreposição no gráfico.
+
+```{r}
+biplot(final_data_pca)
+```
+
+Desta forma, foi utilizado o dataset com os melhores 20 genes ("first20") criado anteriormente, sendo que seria interessante efetuar também uma análise PCA aos mesmos.
+
+```{r}
+first20_pca = prcomp(first20, center = TRUE, scale = TRUE)
+```
+
+```{r}
+summary(first20_pca)
+```
+
+```{r}
+plot(first20_pca)
+```
+
+Obteve-se os 20 componentes principais, denominados PC1 a PC20. Assim, pode-se verificar que o PC1 explica 57.55% da variação total, o que significa que mais de metade da informação no conjunto de dados também pode ser encapsulada por apenas um componente principal.
+
+```{r}
+biplot(first20_pca)
+```
+
+Para entender quantos componentes principais explicam 90% da variância total dos dados:
+
+```{r}
+min(which(summary(first20_pca)$importance[3,]>0.9))
+```
+
+Conclui-se que 8 componentes principais explicam 90% da variância total dos dados.
+
+```{r}
+plot(first20_pca$x[,1], first20_pca$x[,2], pch = 16, xlab = "PC1", ylab = "PC2")
+```
+
+Tal como previsto pela análise anterior, consegue-se concluir que a maior parte da informação no conjunto de dados pode ser explicada pelo PC1.
+
+## Clustering
+
+Uma análise de clustering foi conduzida utilizando a distância euclidiana sobre os dados previamente filtrados e processados. O objetivo desta análise foi identificar possíveis agrupamentos distintos entre as amostras com base na sua expressão genética. Para isso, foram considerados os 50 genes com os melhores valores de p-value.
+
+```{r}
+rank = order(ttests$p.value) #ordenar os 50 genes com menor p-value
+pvalue_50 = rank[1:50]
+```
+
+```{r}
+best50 <- final_data_lusc[pvalue_50, ] #melhores 50 genes
+best50
+```
+
+Ao utilizar a distância euclidiana como métrica de similaridade, foi possível calcular a distância entre cada par de amostras com base nas suas expressões genéticas nos genes selecionados. Com base nestas distâncias, as amostras foram agrupadas de acordo com a sua similaridade, permitindo identificar padrões ou clusters claros no conjunto de dados.
+
+```{r}
+dist = dist(best50, method = 'euclidean')
+clust.gene = hclust(dist)
+
+plot(clust.gene, main = 'Clustering da expressão', cex = 0.22)
+```
+
+Com base no cluster obtido, é possível identificar famílias e subfamílias dentro das amostras. Uma observação importante é a clara bipartição que ocorre entre as amostras. Essa divisão revela que, quando um gene está próximo de outro gene no contexto do clustering, é provável que desempenhem funções semelhantes nas condições de estudo.
+
+Esta informação é importante para compreender a funcionalidade e as interações dos genes. Quando os genes estão agrupados de forma próxima, indica uma maior similaridade nas suas expressões e que a sua função possa ser semelhante nos processos biológicos em estudo.
+
+```{r}
+dist.full = as.matrix(best50, diag = TRUE, upper = TRUE)
+heatmap(dist.full, cexRow=0.3, cexCol=0.3)
+```
+
+```{r}
+best50_matrix <- as.matrix(best50)
+resKmeans <- kmeans(best50_matrix, centers = 3)
+cluster <- resKmeans$cluster
+
+col_x <- 1  
+col_y <- 2  
+
+#plot dos pontos com cores representando os clusters
+plot(best50_matrix[, col_x], best50_matrix[, col_y], col = cluster, pch = 19, cex = 1.5)
+
+#plot dos centróides dos clusters
+points(resKmeans$centers, col = 1:3, pch = 3, cex = 2, lwd = 3)
+```
+
+## Análise preditiva/ aprendizagem máquina
+
+O processo de Análise Preditiva é iniciado com a divisão aleatória dos dados de expressão genética das diferentes amostras em dois grupos distintos. O objetivo desta divisão é criar um conjunto de dados de treino e um conjunto de dados de teste.
+
+Primeiramente, realizou-se uma amostragem do dataframe, garantindo que 70% dos exemplos fossem selecionados para o conjunto de treino e os 30% restantes para o conjunto de teste.
+
+```{r}
+set.seed(12345)
+ind <- sample(2, nrow(final_data_lusc), replace = TRUE, prob = c(0.7, 0.3))
+
+train_data <- final_data_lusc[ind == 1,]
+test_data <- final_data_lusc[ind == 2,]
+
+dim(train_data)
+dim(test_data)
+```
+
+```{r}
+colMeans(train_data)     #média de cada coluna dos dados de treino
+```
+
+```{r}
+colMeans(test_data)      #média de cada coluna dos dados de teste
+```
+
+### Modelo Naive-Bayes
+
+Para realizar a análise preditiva, utilizou-se o algoritmo de Naive-Bayes. O Naive Bayes calcula a probabilidade de uma amostra pertencer a uma determinada classe, com base nas probabilidades condicionais dos recursos. Estas probabilidades são estimadas a partir dos dados de treino. Em seguida, o algoritmo atribui a classe com a maior probabilidade condicional como a classe prevista para uma nova amostra.
+
+```{r}
+train_data_with_metadata <- cbind(train_data, data_rna_lusc$prior_malignancy)
+```
+
+```{r}
+model <- naiveBayes(x = train_data_with_metadata[, -ncol(train_data_with_metadata)],
+                    y = train_data_with_metadata[, ncol(train_data_with_metadata)])
+
+```
+
+```{r}
+test_data_with_metadata <- cbind(test_data, data_rna_lusc$prior_malignancy)
+nb_pred <- predict(model, newdata = test_data_with_metadata[, -ncol(test_data_with_metadata)])
+```
+
+```{r}
+print(nb_pred)
+```
+
+```{r}
+test_labels <- test_data_with_metadata[, ncol(test_data_with_metadata)]
+table(nb_pred, test_labels)
+```
+
+A classe 1 corresponde a "no" para prior_malignancy, ou seja, doentes que não têm histórico de malignidade. A classe 2 corresponde a "not reported", o que significa que não tem resultado conclusivo. E a classe 3 corresponde a "yes", isto é, doentes que apresentam um histórico de malignidade.
+
+Para a classe 1, foram previstas 297 observações corretamente como classe 1, 0 observações foram previstas incorretamente como classe 2 e 35 observações foram previstas incorretamente como classe 3. Para a classe 2, não houve nenhuma observação prevista como classe 2. Para a classe 3, foram previstas 373 observações incorretamente como classe 3, 1 observação foi prevista incorretamente como classe 1 e 55 observações foram previstas corretamente como classe 3.
+
+```{r}
+accuracy <- sum(nb_pred == test_labels) / length(test_labels)
+print(accuracy)
+```
+
+Foi obtida uma acurácia de, aproxidamente, 0.46 o que significa que o modelo Naive-Bayes classificou corretamente aproximadamente 46% das amostras no conjunto de teste. Uma acurácia de 0.46 indica que o modelo não está a realizar uma classificação muito precisa, pelo que não se adequa aos nossos dados.
+
+### Modelo dos k vizinhos mais próximos
+
+Para realizar outra análise preditiva, utilizou-se o algoritmo dos k-vizinhos mais próximos. Este algoritmo de machine learning é comumente usado para tarefas de classificação e regressão. Este classifica ou prevê novos pontos de dados com base na sua proximidade com os pontos de dados existentes no conjunto de treino.
+
+```{r}
+train_labels_knn <- train_data_with_metadata[, ncol(train_data_with_metadata)]
+test_labels_knn <- test_data_with_metadata[, ncol(test_data_with_metadata)]
+```
+
+```{r}
+knn_pred <- knn(train = train_data_with_metadata[, 1:553], test = test_data_with_metadata[, 1:553], train_labels_knn, k=5)
+knn_pred
+```
+
+```{r}
+t_knn = table(knn_pred, test_labels_knn)
+t_knn
+```
+
+Para a classe 1, o modelo previu corretamente 652 instâncias como classe 1. Para a classe 2, o modelo não apresentou previsões para esta classe, portanto o valor é 0. Para a classe 3, o modelo previu corretamente 3 instâncias como classe 3.
+
+Isto permite analisar o desempenho do modelo em relação a cada classe. Pode-se observar que o modelo teve um bom desempenho na previsão da classe 1, com a maioria das instâncias corretamente classificadas. No entanto, o desempenho na classe 3 foi baixo, com apenas algumas instâncias corretamente classificadas e muitas previsões erróneas.
+
+```{r}
+accuracy <- sum(knn_pred == test_labels_knn) / length(test_labels_knn)
+print(accuracy)
+```
+
+O resultado da acurácia foi de 0.86, o que indica que o modelo kNN obteve uma taxa de previsões corretas de, aproximadamente, 86% nos dados de teste. Comparativemente ao modelo anterior, o modelo kNN revelou melhor desempenho neste estudo.
+
+## Seleção/ importância de genes
+
+A variável "prior_malignancy" é uma característica importante a ser considerada numa análise de RNA-Seq de Carcinoma Pulmonar de Células Escamosas (LUSC). Através desta variável, pode-se obter insights sobre a caracterização do grau de malignidade do tumor, estratificar pacientes em diferentes grupos de risco (alto e baixo risco) e entender melhor a biologia e a agressividade do tumor, pois poderá ser correlacionado com outros marcadores moleculares. A análise da "prior_malignancy" permite identificar os pacientes com maior probabilidade de ter um caso clínico mais agressivo e uma resposta menos favorável ao tratamento. Isto pode levar a uma tomada de decisão mais informada sobre o planeamento do tratamento.
+
+## Referências
+
+[1] S. Satpathy et al., "A proteogenomic portrait of lung squamous cell carcinoma," Cell, vol. 184, no. 16, pp. 4348-4371.e40, Aug. 2021, doi: 10.1016/J.CELL.2021.07.016.
+
+[2] M. Gao, W. Kong, Z. Huang, and Z. Xie, "Identification of Key Genes Related to Lung Squamous Cell Carcinoma Using Bioinformatics Analysis," Int. J. Mol. Sci. 2020, Vol. 21, Page 2994, vol. 21, no. 8, p. 2994, Apr. 2020, doi: 10.3390/IJMS21082994.
+
+[3] "Cancro do pulmão - European Lung Foundation." <https://europeanlung.org/pt-pt/information-hub/factsheets/cancro-do-pulmao/> (accessed Apr. 13, 2023).
